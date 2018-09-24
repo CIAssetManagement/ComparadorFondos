@@ -1,0 +1,458 @@
+---
+title: "Comparativo de Fondos"
+author: "CIEstrategias"
+date: "Comparación al `r format(Sys.Date()-1, '%d de %B del %Y')`"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+#Librerías
+library(readxl)
+library(dplyr)
+library(reshape2)
+library(DT)
+library(plotly)
+library(tidyr)
+
+#Archivos
+festivos <- read.csv('festivos.csv',header=TRUE,stringsAsFactors = FALSE)
+festivos$dias <- as.Date(festivos$dias,format="%d/%m/%Y")
+
+#Funciones
+#Para saber si el dia es inhábil y regresar el último dia hábil
+diah <-  function(fecha){
+  fechabase0 <- as.Date("2017-08-06")
+  entero <- as.integer(fecha - fechabase0 )
+  if(entero %% 7 == 6 | entero %% 7 == 0){
+    return(diah(fecha-1))
+    } else {
+    if(fecha %in% festivos$dias){
+      return(diah(fecha-1))
+      } else {return(fecha)}
+    }
+  }
+#Para obtener las fechas de los periodos elegidos
+fechas <- function(fecha,modificacion){
+  elemento <- which(c('1 Dia','7 Dias','En El Mes','En El Año','Ultimos 30 Dias','Ultimos 90 Dias',
+                      'Ultimos 6 Meses','Ultimos 12 Meses') == modificacion)
+  ao <- substr(fecha,1,4)
+  mes <- substr(fecha,6,7)
+  as.character(switch(elemento,
+                      diah(fecha-1),
+                      diah(fecha-7),
+                      diah(as.Date(paste0(ao,"-",mes,"-01"))-1),
+                      diah(as.Date(paste0(ao,"-01-01"))-1),
+                      diah(fecha - 30),
+                      diah(fecha - 90),
+                      diah(seq(fecha,length.out = 7, by = "-1 month")[7]),
+                      diah(seq(fecha, length.out = 13, by = "-1 month")[13])))
+  }
+#Para obtener la tabla que se imprime
+tabla <- function(fund,comisions,periodo,fecha,acomodar,fondos,fondoss,tipo = 'renta fija'){
+  #Fechas relevantes
+  seriefechas <- as.character(mapply(fechas,fecha,periodo))
+  #Precios del dia actual
+  numerador <- matrix(as.numeric(fund[which(fund$fecha == fecha),-1]),nrow = length(fondos),ncol = length(periodo))
+  #Precios de los dias comparativos
+  indices <- sapply(seriefechas,function(x){return(which(fund$fecha == x))})
+  denominador <- t(fund[indices,-1])
+  
+  #Creando el data frame
+  if(tipo == "renta fija"){
+    if(fondoss %in% renta_fija_tasas){
+      #Rendimiento anualizado
+      df <- 36000*(numerador / denominador - 1)
+      df_d <- fecha - as.Date(seriefechas)
+      df <- sweep(df, 2, df_d, `/`)
+      #Impuestos
+      indisr <- sapply(seriefechas,function(x){return(which(as.character(isr$Fecha) == x))})
+      isrc <- sapply(indisr,function(x){return(mean(as.numeric(isr$ISR[x:length(isr$ISR)]),na.rm = TRUE))})
+      df <- sweep(df,2,isrc,`+`)
+      #Comisiones
+      indicesc <- sapply(seriefechas,function(x){return(which(comisions$fecha == x))})
+      indicesc <- rep(indicesc,length(fondos[-which(fondos %in% benchmarks)]))
+      fondosc <- sort(rep(fondos[-which(fondos %in% benchmarks)],length(seriefechas)))
+      comisiones <- mapply(function(x,y){return(mean(comisions[y:length(comisions[,1]),
+                                                               which(colnames(comisions) == x)]))},fondosc,indicesc)
+      df2 <- data.frame(matrix(comisiones,nrow = length(fondos[-which(fondos %in% benchmarks)]),
+                               ncol = length(seriefechas),byrow = TRUE))
+      df2 <- 1.16*df2
+      #Rendimiento del benchmark
+      rendimiento <- sapply(indices,function(x){return(mean(fund[x:length(fund$fecha),length(colnames(fund))],
+                                                            na.rm = TRUE))})
+      df <- rbind(Benchmark = rendimiento,df[-length(row.names(df)),])
+    } else {
+      
+      #Rendimiento anualizado
+      df <- 36000*(numerador / denominador - 1)
+      df_d <- fecha - as.Date(seriefechas)
+      df <- sweep(df, 2, df_d, `/`)
+      #Impuestos
+      indisr <- sapply(seriefechas,function(x){return(which(as.character(isr$Fecha) == x))})
+      isrc <- sapply(indisr,function(x){return(mean(as.numeric(isr$ISR[x:length(isr$ISR)])))})
+      df <- rbind(Benchmark = df[which(row.names(df) %in% benchmarks),],
+                  sweep(df[-which(row.names(df) %in% benchmarks),],2,isrc,`+`))
+      #Comisiones
+      indicesc <- sapply(seriefechas,function(x){return(which(comisions$fecha == x))})
+      indicesc <- rep(indicesc,length(fondos[-which(fondos %in% benchmarks)]))
+      fondosc <- sort(rep(fondos[-which(fondos %in% benchmarks)],length(seriefechas)))
+      comisiones <- mapply(function(x,y){return(mean(comisions[y:length(comisions[,1]),
+                                                               which(colnames(comisions) == x)]))},fondosc,indicesc)
+      df2 <- data.frame(matrix(comisiones,nrow = length(fondos[-which(fondos %in% benchmarks)]),
+                               ncol = length(seriefechas),byrow = TRUE))
+      df2 <- 1.16*df2
+    }
+  } else {
+    df <- 100*(numerador/denominador - 1)
+    #Impuestos
+    indisr <- sapply(seriefechas,function(x){return(which(as.character(isr$Fecha) == x))})
+    tiempo <- sapply(seriefechas,function(x){return(as.numeric(fecha-as.Date(x,origin = '1970-01-01')))})
+    isrc <- mapply(function(x,y){return(mean(as.numeric(isr$ISR[x:length(isr$ISR)]))*as.numeric(y)/360)},indisr,
+                   tiempo)
+    df <- rbind(Benchmark = df[which(row.names(df) %in% benchmarks),],
+                sweep(df[-which(row.names(df) %in% benchmarks),],2,isrc,`+`))
+    #Comisiones
+    indicesc <- sapply(seriefechas,function(x){return(which(comisions$fecha == x))})
+    indicesc <- rep(indicesc,length(fondos[-which(fondos %in% benchmarks)]))
+    fondosc <- sort(rep(fondos[-which(fondos %in% benchmarks)],length(seriefechas)))
+    comisiones <- mapply(function(x,y,z){return(mean(comisions[y:length(comisions[,1]),
+                                                             which(colnames(comisions) == x)])*as.numeric(z)/360)},
+                         fondosc,indicesc,tiempo)
+    df2 <- data.frame(matrix(comisiones,nrow = length(fondos[-which(fondos %in% benchmarks)]),
+                             ncol = length(seriefechas),byrow = TRUE))
+    df2 <- 1.16*df2
+  }
+  
+  #Data frame final
+  operadora <- sapply(row.names(df),function(x){
+    if(x == "Benchmark")
+      return("-")
+    else
+      return(unique(datos$Operadora[which(datos$Clave == x)]))
+    })
+  df <- data.frame(row.names(df),operadora,df)
+  df[-1,-c(1,2)] <- df[-1,-c(1,2)] + df2 #Sumando las comisiones
+  df[,-c(1,2)] <- round(df[,-c(1,2)],digits = 2)
+  if("En El Año" %in% periodo){periodo[which(periodo == "En El Año")] <- format(fecha, 'Acumulado %Y')}
+  if("En El Mes" %in% periodo){periodo[which(periodo == "En El Mes")] <- format(fecha, 'En %B')}
+  colnames(df) <- c("Fondo","Operadora",periodo)
+  
+  if(acomodar == "En El Año")
+    acomodar <- format(fecha, 'Acumulado %Y')
+  if(acomodar == "En El Mes")
+    acomodar <- format(fecha, 'En %B')
+  
+  if(acomodar %in% periodo)
+    df <- df[ order(-df[,which(colnames(df) == acomodar)]), ] 
+  df[,-c(1,2)] <- lapply(df[,-c(1,2)],function(x){paste0(x,"%")})
+  return(df)
+  }
+#Para obtener la gráfica de rendimientos que se imprime
+grafica_anual <- function(fund,comisions,fecha,fondos,fondoss,bench_fund,tipo = 'renta fija'){
+  #Obteniendo y ajustando las comisiones
+  bench <- fund[,colnames(fund) %in% c("fecha",benchmarks)]
+  fund <- fund[,!(colnames(fund) %in% benchmarks)]
+  
+  seriefechas <- seq(fecha,length.out = 13,by = "-1 month")
+  seriefechas <- as.Date(sapply(seriefechas,diah),origin = '1970-01-01')
+  precios <- fund[which(fund$fecha %in% seriefechas),]
+  if(tipo == 'renta fija'){
+    rendimientos <- 36000*(data.frame(precios[-1,-1]/precios[-length(precios$fecha),-1],
+                                      row.names = precios$fecha[-1])-1)/30
+  } else {
+    rendimientos <- 100*(data.frame(precios[-1,-1]/precios[-length(precios$fecha),-1],
+                                      row.names = precios$fecha[-1])-1)
+  }
+  if(colnames(bench)[2] %in% c("CETES-364","Fondeo-GuberMX")){
+    funcion <- function(x,y){
+      x1 <- which(as.character(bench$fecha)==x)
+      y1 <- which(as.character(bench$fecha)==y)
+      return(mean(bench[x1:y1,2],na.rm = TRUE))
+      }
+    rendimientos_bench <- mapply(funcion,seriefechas[-length(seriefechas)],seriefechas[-1])
+    rendimientos_bench <- data.frame(rendimientos_bench,row.names = precios$fecha[-1])
+  } else {
+    precios_bench <- bench[which(bench$fecha %in% seriefechas),]
+    if(colnames(precios_bench)[2] %in% c("RC-MBONOS-1-3-YEAR-IND","RC-MBONOS-3-5-YEAR-IND")){
+      rendimientos_bench <- 36000*(data.frame(precios_bench[-1,-1]/precios_bench[-length(precios_bench$fecha),-1],
+                                      row.names = precios_bench$fecha[-1])-1)/30
+    } else {
+      rendimientos_bench <- 100*(data.frame(precios_bench[-1,-1]/precios_bench[-length(precios_bench$fecha),-1],
+                                      row.names = precios_bench$fecha[-1])-1)
+    }
+    
+  }
+
+  #impuestos
+  adelantado <- seriefechas[-length(seriefechas)]
+  atrasado <- as.Date(sapply((seriefechas + 1)[-1],diah),origin = '1970-01-01')
+  if(tipo == 'renta fija'){
+    isrg <- mapply(
+    function(x,y){return(mean(as.numeric(isr$ISR[which(isr$Fecha == x):which(isr$Fecha == y)])))},atrasado,adelantado)
+  } else {
+    isrg <- mapply(
+    function(x,y){return(mean(as.numeric(isr$ISR[which(isr$Fecha == x):which(isr$Fecha == y)]))*as.numeric(y-x)/360)},
+    atrasado,adelantado)
+  }
+  isrg <- rev(isrg)
+  rendimientos <- sweep(rendimientos,1,isrg,`+`)
+  #comisiones
+  comisionesg <- c()
+  if(tipo == 'renta fija'){
+    for(x in fondos[!(fondos %in% benchmarks)]){
+      dato <- mapply(
+        function(x,y,z){return(mean(comisions[which(comisions$fecha == y):which(comisions$fecha == z),
+                                  which(colnames(comisions) == x)]))},rep(x,length(adelantado)),atrasado,adelantado)
+      comisionesg <- c(comisionesg,dato)
+    }
+  } else {
+    for(x in fondos[!(fondos %in% benchmarks)]){
+      dato <- mapply(
+        function(x,y,z){return(mean(comisions[which(comisions$fecha == y):which(comisions$fecha == z),
+                                  which(colnames(comisions) == x)])*as.numeric(z-y)/360)},
+        rep(x,length(adelantado)),atrasado,adelantado)
+      comisionesg <- c(comisionesg,dato)
+    }
+  }
+
+  comisionesg <- data.frame(matrix(comisionesg,ncol = length(fondos[!(fondos %in% benchmarks)]), 
+                                   nrow = length(adelantado),byrow = FALSE))
+  comisionesg <- comisionesg[rev(rownames(comisionesg)),]
+  rendimientos <- data.frame(rendimientos + 1.16*comisionesg)
+  rendimientos$fecha <- row.names(rendimientos)
+  colnames(rendimientos) <- c(fondos[!(fondos %in% benchmarks)],"fecha")
+  rendimientos_bench$fecha <- row.names(rendimientos)
+  colnames(rendimientos_bench) <- c(colnames(bench)[2],"fecha")
+  rendimientos <- merge(rendimientos,rendimientos_bench, by = 'fecha')
+  
+  df <- melt(rendimientos ,  id.vars = 'fecha', variable.name = 'series')
+  df$medida <- ifelse(df$series == fondoss,2,1)
+  return(df)
+}
+#Para obtener la gráfica de riesgo-rendimiento
+grafica_rr <- function(fund,comisions,fecha,fondos,fondoss,tipo = 'renta fija'){
+  #Obteniendo y ajustando las comisiones
+  fund <- fund[,!(colnames(fund) %in% benchmarks)]
+  
+  #Rendimientos
+  seriefechas <- seq(fecha,length.out = 2,by = "-12 month")
+  listafechas <- seq(seriefechas[2],seriefechas[1],by="1 day")
+  precios <- fund[which(fund$fecha %in% listafechas),]
+  rendimientos <- 100*(precios[-1,-1]/precios[-length(precios$fecha),-1]-1)
+  if(tipo == "renta fija"){
+    promedio <- 36000*(precios[length(precios$fecha),-1]/precios[1,-1]-1)/as.numeric(seriefechas[1]-seriefechas[2])
+  } else {
+    promedio <- 100*(precios[length(precios$fecha),-1]/precios[1,-1]-1)
+  }
+  promedio <- promedio + mean(as.numeric(isr$ISR[which(isr$Fecha %in% listafechas)]))
+  #Comisiones
+  indicesc <- sapply(seriefechas[2],function(x){return(which(comisions$fecha == x))})
+  indicesc <- rep(indicesc,length(fondos[-which(fondos %in% benchmarks)]))
+  fondosc <- fondos[-which(fondos %in% benchmarks)]
+  comisiones <- mapply(function(x,y){return(mean(comisions[y:length(comisions[,1]),
+                                                           which(colnames(comisions) == x)]))},fondosc,indicesc)
+  comisiones <- 1.16*comisiones
+  promedio <- promedio + comisiones
+  #Riesgo
+  riesgo <- apply(rendimientos,2,function(x){sqrt(360)*sd(ifelse(x<0,x,0),na.rm = TRUE)})
+  df <- round(data.frame(Rendimiento = unlist(promedio), Riesgo = unlist(riesgo)),digits = 2)
+  df$Fondos <- row.names(df)
+  df$medida <- ifelse(df$Fondos == fondoss,2,1)
+  return(df)
+}
+#Para acomodar los fondos
+acomodador <- function(fondo){
+  elemento <- which(c('51-+CIGUB-A','51-+CIGUMP-A','51-+CIGULP-A','51-+CIPLUS-A','51-+CIUSD-A','52-+CIBOLS-A',
+                      '52-+CIEQUS-A') == fondo)
+  as.character(switch(elemento,
+                      c('En El Año','renta fija'),
+                      c('En El Año','renta fija'),
+                      c('En El Año','renta fija'),
+                      c('En El Año','renta fija'),
+                      c('En El Año','renta variable'),
+                      c('En El Año','renta variable'),
+                      c('En El Año','renta variable')))
+}
+
+#Cargando datos
+benchmarks <- c('*CSP-MXPUSDS-V48','RC-SPX-IND','RC-MEXBOL-IND','Fondeo-GuberMX','RC-MBONOS-3-5-YEAR-IND',
+                'RC-MBONOS-1-3-YEAR-IND','CETES-364')
+renta_fija_tasas <- c("51-+CIGUB-A","51-+CIPLUS-A")
+fondos_elegir <- c('51-+CIGUB-A','51-+CIGUMP-A','51-+CIGULP-A','51-+CIPLUS-A','51-+CIUSD-A','52-+CIBOLS-A',
+                   '52-+CIEQUS-A')
+datos <- read_excel("comparables.xlsx")
+datos <- datos[order(datos$Fondo),]
+comisiones <- read.csv("comisiones.csv")
+precios <- read.csv('precios.csv',stringsAsFactors = FALSE,colClasses = c('character','Date','numeric'))
+isr <- read_excel("isr.xlsx")
+isr$Fecha <- as.Date(isr$Fecha)
+```
+
+---
+
+### Instrucciones:
+
+- Elegir fecha, plazos y fondos para el comparativo.
+
+- Dentro de las gráficas, dar click en el nombre de los fondos que no se quieren ver.
+
+---
+
+```{r}
+fluidRow(
+  column(6, dateInput('date', label = 'Fecha del comparativo', value = diah(max(precios$fecha)-1))),
+  column(6, selectInput('period', label = 'Plazo de comparacion', choices = c('1 Dia','7 Dias','En El Mes','En El Año',
+                                                          'Ultimos 30 Dias','Ultimos 90 Dias','Ultimos 6 Meses',
+                                                          'Ultimos 12 Meses'),multiple = TRUE, 
+                        selected = c('Ultimos 30 Dias','Ultimos 6 Meses','Ultimos 12 Meses','En El Año'))),
+  column(6,selectInput('fondos', label = 'Fondo de Inversión', choices = fondos_elegir, selected = fondos_elegir[1]))
+)
+```
+
+### Comparativo de los Fondos:
+
+```{r}
+#Imprimiendo la tabla.
+renderDataTable({
+  fondoss <- input$fondos
+  fondos <- sort(datos$Clave[which(datos$Comparativo == strsplit(fondoss,"-")[[1]][2])])
+  acomodar <- acomodador(fondoss)[1]
+  periodo <- input$period
+  fecha <- input$date
+  tipo <- acomodador(fondoss)[2]
+  
+  #Obteniendo y ajustando las comisiones
+  comisions <- comisiones  %>%
+    filter(fondo %in% fondos) %>%
+    mutate(fecha = as.Date(fecha)) %>%
+    spread(fondo, comision_admin) %>%
+    data.frame(check.names = FALSE)
+    for(i in seq(1,length(colnames(comisions)),1)){
+      indice <- which(is.na(comisions[,i]) == TRUE)
+      if(length(indice) != 0){
+        indice <- max(which(is.na(comisions[,i]) == TRUE))
+        comisions[seq(1,indice,1),i] <- comisions[indice+1,i]
+      }
+    }
+
+  #Ajustando los precios
+  fund <- precios %>%
+    filter(id %in% fondos) %>%
+    mutate(fecha = as.Date(fecha)) %>%
+    spread(id, Precio_limpio) %>%
+      data.frame(check.names = FALSE)
+  
+  df <- datatable(tabla(fund,comisions,periodo,fecha,acomodar, fondos, fondoss,tipo),rownames=FALSE, 
+                  options = list(dom = 't', pageLength = 100)) %>%
+    formatStyle("Fondo",target = 'row', backgroundColor = styleEqual(fondoss,c('#88bbcc')))
+})
+```
+
+### Gráfica de Rendimiento MoM en los últimos 12 meses:
+
+```{r}
+#Imprimiendo la gráfica de rendimientos.
+renderPlotly({
+  fondoss <- input$fondos
+  fondos <- sort(datos$Clave[which(datos$Comparativo == strsplit(fondoss,"-")[[1]][2])])
+  fecha <- input$date
+  tipo <- acomodador(fondoss)[2]
+  
+  bench_fund <- switch(fondoss,
+                       "51-+CIGUB-A" = "Fondeo-GuberMX",
+                       "51-++CIGUMP-A" = "RC-MBONOS-1-3-YEAR-IND",
+                       "51-+CIGULP-A" = "RC-MBONOS-3-5-YEAR-IND",
+                       "51-+CIPLUS-A" = "CETES-364",
+                       "51-+CIUSD-A" = "*CSP-MXPUSDS-V48",
+                       "52-+CIBOLS-A" = "RC-MEXBOL-IND",
+                       "52-+CIEQUS-A" = "RC-SPX-IND")
+  fondos <- c(fondos,bench_fund)
+  
+  #Obteniendo y ajustando las comisiones
+  comisions <- comisiones  %>%
+    filter(fondo %in% fondos) %>%
+    mutate(fecha = as.Date(fecha)) %>%
+    spread(fondo, comision_admin) %>%
+    data.frame(check.names = FALSE)
+    for(i in seq(1,length(colnames(comisions)),1)){
+      indice <- which(is.na(comisions[,i]) == TRUE)
+      if(length(indice) != 0){
+        indice <- max(which(is.na(comisions[,i]) == TRUE))
+        comisions[seq(1,indice,1),i] <- comisions[indice+1,i]
+      }
+    }
+
+#Ajustando los precios
+  fund <- precios %>%
+    filter(id %in% fondos) %>%
+    mutate(fecha = as.Date(fecha)) %>%
+    spread(id, Precio_limpio) %>%
+      data.frame(check.names = FALSE)
+
+  plot_ly(grafica_anual(fund,comisions,fecha,fondos,fondoss,bench_fund,tipo), x = ~fecha, y = ~value, color = ~series, 
+          linetype = ~series,type = 'scatter', size = ~medida, sizes = c(5, 10), mode = 'lines') %>%
+    layout(title = '',xaxis = list(title = ''),
+           yaxis = list (title = 'Rendimiento'))
+})
+```
+
+### Gráfica de Riesgo-Rendimiento del Fondo:
+
+```{r}
+#Imprimiendo la gráfica de rendimientos.
+renderPlotly({
+  fondoss <- input$fondos
+  fondos <- sort(datos$Clave[which(datos$Comparativo == strsplit(fondoss,"-")[[1]][2])])
+  fecha <- input$date
+  tipo <- acomodador(fondoss)[2]
+  
+    #Obteniendo y ajustando las comisiones
+  comisions <- comisiones  %>%
+    filter(fondo %in% fondos) %>%
+    mutate(fecha = as.Date(fecha)) %>%
+    spread(fondo, comision_admin) %>%
+    data.frame(check.names = FALSE)
+    for(i in seq(1,length(colnames(comisions)),1)){
+      indice <- which(is.na(comisions[,i]) == TRUE)
+      if(length(indice) != 0){
+        indice <- max(which(is.na(comisions[,i]) == TRUE))
+        comisions[seq(1,indice,1),i] <- comisions[indice+1,i]
+      }
+    }
+
+#Ajustando los precios
+  fund <- precios %>%
+    filter(id %in% fondos) %>%
+    mutate(fecha = as.Date(fecha)) %>%
+    spread(id, Precio_limpio) %>%
+      data.frame(check.names = FALSE)
+
+  plot_ly(grafica_rr(fund,comisions,fecha,fondos,fondoss,tipo), x = ~Riesgo, y = ~Rendimiento, type = 'scatter', 
+          color = ~Fondos,mode = 'text', text = ~Fondos, textposition = 'middle', size = ~medida, 
+          sizes = c(16, 20)) %>%
+    layout(title = '',xaxis = list(title = 'Riesgo'),
+           yaxis = list (title = 'Rendimiento'))
+})
+```
+
+
+### Notas:
+
+- Los Benchmarks de los fondos son los siguientes:
+
+| Fondo | Benchmark  |
+|---|---|
+| CIGUB  | Fondeo Gubernamental |
+| CIGUMP  | MBONOS 1-3 Year |
+| CIGULP  | MBONOS 3-5 Year |
+| CIPLUS  | CETES-364 |
+| CIUSD  | Tipo de Cambio Spot 48h |
+| CIBOLS  | IPC |
+| CIEQUS  | S&P-500 |
+
+- El rendimiento se calcula como el promedio de los rendimientos diarios en el año.
+
+- El riesgo se calcula tomando la desviación estándar de los datos negativos (los días que hubieron pérdidas).
